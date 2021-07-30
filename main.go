@@ -85,12 +85,9 @@ func idleInTransactionTimeout(c *gin.Context) {
 		// if err := tx.Exec("SELECT pg_sleep(3);").Error; err != nil {
 		// 	return errors.Wrap(err, strconv.FormatInt(int64(i), 32)+": sleep")
 		// }
-		if i%2 == 0 {
-			time.Sleep(1 * time.Second)
-		} else {
-			// 佔用 Lock 太久，到時 Commit 會有 FATAL: terminating connection due to idle-in-transaction timeout (SQLSTATE 25P03)
-			time.Sleep(2 * time.Second)
-		}
+
+		// 佔用 Lock 太久，到時 Commit 會有 FATAL: terminating connection due to idle-in-transaction timeout (SQLSTATE 25P03)
+		time.Sleep(3 * time.Second)
 
 		fmt.Printf("%d: finish process\n", i)
 		return nil
