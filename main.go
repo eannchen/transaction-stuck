@@ -54,6 +54,15 @@ func init() {
 	// curl http://127.0.0.1:8080/statement_timeout/
 	r.GET("/statement_timeout/", statementTimeout)
 
+	// curl http://127.0.0.1:8080/gorm_set_max_open_conns/
+	r.GET("/gorm_set_max_open_conns/", gormSetMaxOpenConns)
+
+	// curl http://127.0.0.1:8080/gorm_set_max_idle_conns/
+	r.GET("/gorm_set_max_idle_conns/", gormSetMaxIdleConns)
+
+	// curl http://127.0.0.1:8080/gorm_conn_max_life_time/
+	r.GET("/gorm_conn_max_life_time/", gormSetConnMaxLifeTime)
+
 	srv := &http.Server{Addr: ":8080", Handler: r}
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("listen and serve error: %s", err.Error())
@@ -127,8 +136,77 @@ func statementTimeout(c *gin.Context) {
 	c.JSON(http.StatusOK, "")
 }
 
-func main() {
+// curl http://127.0.0.1:8080/gorm_set_max_open_conns/
+func gormSetMaxOpenConns(c *gin.Context) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, err.Error())
+		return
+	}
+	sqlDB.SetMaxOpenConns(2)
 
+	concurrency(4, func(tx *gorm.DB, i int) error {
+		// 將多出的連線卡在 Begin
+		fmt.Printf("%d: start\n", i)
+		time.Sleep(5 * time.Second)
+		return nil
+	})
+
+	sqlDB.SetMaxOpenConns(0) // <= 0 means unlimited
+	c.JSON(http.StatusOK, "")
+}
+
+// curl http://127.0.0.1:8080/gorm_set_max_idle_conns/
+func gormSetMaxIdleConns(c *gin.Context) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, err.Error())
+		return
+	}
+	sqlDB.SetMaxIdleConns(5)
+
+	fmt.Printf("connection: %d\n", countConnection())
+
+	// 所有 goroutine 執行 commit 完，還會保有連線
+	concurrency(5, func(tx *gorm.DB, i int) error { return nil })
+	fmt.Printf("connection: %d\n", countConnection())
+
+	// 再執行一次，會拿待機的連線去使用
+	concurrency(5, func(tx *gorm.DB, i int) error { return nil })
+	fmt.Printf("connection: %d\n", countConnection())
+
+	sqlDB.SetMaxIdleConns(0)
+	c.JSON(http.StatusOK, "")
+}
+
+// curl http://127.0.0.1:8080/gorm_conn_max_life_time/
+func gormSetConnMaxLifeTime(c *gin.Context) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetConnMaxLifetime(2 * time.Second)
+	concurrency(10, func(tx *gorm.DB, i int) error { return nil })
+
+	fmt.Printf("connection: %d\n", countConnection())
+
+	// 超過時間後，會釋出待機的連線
+	time.Sleep(5 * time.Second)
+	fmt.Printf("connection: %d\n", countConnection())
+
+	c.JSON(http.StatusOK, "")
+}
+
+func main() {}
+
+func countConnection() (count int) {
+	if err := db.Raw("SELECT count(*) FROM pg_stat_activity WHERE usename = 'postgres';").Scan(&count).Error; err != nil {
+		log.Fatalf("count connection error: %s", err.Error())
+	}
+	return
 }
 
 func concurrency(count int, fn func(tx *gorm.DB, i int) error) {
@@ -138,6 +216,7 @@ func concurrency(count int, fn func(tx *gorm.DB, i int) error) {
 		go func(i int) {
 			defer wg.Done()
 			tx := db.Begin()
+			fmt.Printf("%d: start\n", i)
 
 			if err := fn(tx, i); err != nil {
 				tx.Rollback()
