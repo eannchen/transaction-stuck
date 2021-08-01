@@ -75,18 +75,20 @@ func idleInTransactionTimeout(c *gin.Context) {
 		if err := tx.Exec("SET idle_in_transaction_session_timeout=1500;").Error; err != nil {
 			return errors.Wrap(err, strconv.FormatInt(int64(i), 32)+": set lock timeout")
 		}
-		// 一定拿得到 Lock (別人拿 Lock 太久會強制釋出)
+
 		if err := tx.Exec("UPDATE t SET num=? WHERE name='ian';", i).Error; err != nil {
 			return errors.Wrap(err, strconv.FormatInt(int64(i), 32)+": update")
 		}
 		fmt.Printf("%d: got lock and updated\n", i)
 
-		// 如果不用 time.Sleep，而是用 SELECT pg_sleep()，不會受 idle_in_transaction_session_timeout 影響而 commit 失敗
+		// tx state 'active'，不會受 idle_in_transaction_session_timeout 影響，不會釋放 connection
+		// 需要使用 SET statement_timeout 將 tx 轉為 state 'idle'
 		// if err := tx.Exec("SELECT pg_sleep(3);").Error; err != nil {
 		// 	return errors.Wrap(err, strconv.FormatInt(int64(i), 32)+": sleep")
 		// }
 
-		// 佔用 Lock 太久，到時 Commit 會有 FATAL: terminating connection due to idle-in-transaction timeout (SQLSTATE 25P03)
+		// tx state 'idle in transaction' 超時，釋放 connection
+		// Commit → FATAL: terminating connection due to idle-in-transaction timeout (SQLSTATE 25P03)
 		time.Sleep(3 * time.Second)
 
 		fmt.Printf("%d: finish process\n", i)
@@ -101,12 +103,13 @@ func lockTimeout(c *gin.Context) {
 		if err := tx.Exec("SET lock_timeout=1500;").Error; err != nil {
 			return errors.Wrap(err, "set lock timeout")
 		}
-		// 太久拿不到 Lock，這裡會被放棄執行，然後 ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
+		// 太久拿不到 Lock，這裡會被放棄執行 => tx state 'idle', tx query 'rollback'
+		// ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)
 		if err := tx.Exec("UPDATE t SET num=? WHERE name='ian';", i).Error; err != nil {
 			return errors.Wrap(err, strconv.FormatInt(int64(i), 32)+": update")
 		}
 		fmt.Printf("%d: got lock and updated\n", i)
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 
 		fmt.Printf("%d: finish process\n", i)
 		return nil
@@ -118,11 +121,11 @@ func lockTimeout(c *gin.Context) {
 // curl http://127.0.0.1:8080/statement_timeout/
 func statementTimeout(c *gin.Context) {
 	concurrency(2, func(tx *gorm.DB, i int) error {
-		if err := tx.Exec("SET statement_timeout=1500;").Error; err != nil {
+		if err := tx.Exec("SET statement_timeout=10000;").Error; err != nil {
 			return errors.Wrap(err, "set lock timeout")
 		}
-		// 模擬某個 SELECT 太久
-		if err := tx.Exec("SELECT pg_sleep(3);").Error; err != nil {
+		// tx 'active' 超時 => tx state 'idle', tx query 'rollback'
+		if err := tx.Exec("SELECT pg_sleep(30);").Error; err != nil {
 			return errors.Wrap(err, strconv.FormatInt(int64(i), 32)+": sleep")
 		}
 
