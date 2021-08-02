@@ -121,11 +121,12 @@ func lockTimeout(c *gin.Context) {
 // curl http://127.0.0.1:8080/statement_timeout/
 func statementTimeout(c *gin.Context) {
 	concurrency(2, func(tx *gorm.DB, i int) error {
-		if err := tx.Exec("SET statement_timeout=10000;").Error; err != nil {
+		if err := tx.Exec("SET statement_timeout=1500;").Error; err != nil {
 			return errors.Wrap(err, "set lock timeout")
 		}
 		// tx 'active' 超時 => tx state 'idle', tx query 'rollback'
-		if err := tx.Exec("SELECT pg_sleep(30);").Error; err != nil {
+		// ERROR: canceling statement due to statement timeout (SQLSTATE 57014)
+		if err := tx.Exec("SELECT pg_sleep(3);").Error; err != nil {
 			return errors.Wrap(err, strconv.FormatInt(int64(i), 32)+": sleep")
 		}
 
